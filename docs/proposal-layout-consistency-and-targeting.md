@@ -154,22 +154,49 @@ Concretely, recommend:
   (`chrome.contextMenus.create` + `contexts: ['page']`), and it avoids
   needing a popup just to expose a second mode.
 
-**3. New file: `content/picker.js`** (new interactive layer, injected only
+**3. Picking the right granularity, not just the innermost node.** A naive
+`mousemove` handler that outlines `e.target` picks whatever leaf DOM node is
+under the cursor - a `<span>` inside a `<td>` inside a `<table>`, or a single
+word inside a `<p>`. That's almost never the "component" the user means to
+target (a whole table, a recipe card, a comment thread). web-clipper's
+`Highlighter` package is a black box here (its source isn't in the repo
+checkout), but the problem it has to solve is the same one, so zen-view's
+picker needs its own answer: **walk up from `e.target` to the nearest
+"block-like" ancestor**, and let the user widen the selection manually.
+```js
+const BLOCK_TAGS = new Set(['ARTICLE','SECTION','TABLE','FIGURE','UL','OL','DIV','P','BLOCKQUOTE','PRE']);
+function nearestBlock(el) {
+  while (el && el !== document.body && !BLOCK_TAGS.has(el.tagName)) el = el.parentElement;
+  return el || document.body;
+}
+```
+Bind `ArrowUp`/`[` to `hovered = hovered.parentElement` (widen) and
+`ArrowDown`/`]` to descend back toward `e.target` (narrow), so the user can
+correct a too-broad or too-narrow guess before confirming - without this,
+the picker technically "targets an element" but not usably.
+
+**4. New file: `content/picker.js`** (new interactive layer, injected only
 when targeting mode is requested):
 ```js
 (() => {
   let hovered = null;
   const outline = (el) => { if (hovered) hovered.style.outline = ''; hovered = el; el.style.outline = '2px solid #0a7d2c'; };
 
-  function onMove(e) { outline(e.target); }
+  function onMove(e) { outline(nearestBlock(e.target)); }
+  function onKey(e) {
+    if (e.key === 'Escape') return cleanup();
+    if (e.key === 'ArrowUp' && hovered?.parentElement) outline(hovered.parentElement);
+    if (e.key === 'Enter') confirm();
+  }
   function onClick(e) {
     e.preventDefault(); e.stopPropagation();
-    cleanup();
-    chrome.runtime.sendMessage({ type: 'ELEMENT_PICKED', selector: buildSelector(e.target) });
-    // or: pass the element directly to transform logic run in the same script,
-    // avoiding a round-trip through the service worker (simpler, see below)
+    confirm();
   }
-  function onKey(e) { if (e.key === 'Escape') cleanup(); }
+  function confirm() {
+    const target = hovered;
+    cleanup();
+    zenTransform(target); // same function Feature 1's whole-page mode calls, just scoped
+  }
   function cleanup() {
     if (hovered) hovered.style.outline = '';
     document.removeEventListener('mousemove', onMove);
@@ -192,55 +219,63 @@ the skill's content-script guidance both imply):
   transform can run.
 - **Escape-to-cancel** and **cleanup of listeners/outline styles** - without
   this, picking mode leaks state if the user changes their mind.
-- No need for a separate `buildSelector()`/CSS-selector step at all if the
-  picker directly holds a reference to the clicked DOM node in the same
-  script context - selector-string generation (what web-clipper's
-  `Highlighter` does, presumably to support serialization/persistence) is
-  only necessary if the target needs to be re-found later (e.g. from a
-  different script or after a message round-trip). Since zen-view transforms
-  immediately and in-place, **the picker script can just call the transform
-  logic directly on `e.target`** - no selector generation, no message
-  passing needed. This is simpler than web-clipper's approach because
-  zen-view doesn't need to persist/serialize the target.
+- No CSS-selector generation needed. web-clipper's `Highlighter` presumably
+  builds a selector string to support serialization/persistence across its
+  editor UI - zen-view has no such requirement, since it transforms
+  immediately and in-place within the same script execution. **The picker
+  script holds a direct reference to the DOM node and calls `zenTransform`
+  on it in the same context** - no selector generation, no message passing.
+  This is simpler than web-clipper's approach for a reason specific to
+  zen-view's model, not a shortcut that skips something necessary.
 
-**4. Transform logic needs a scoped entry point.** `content/transform.js`
-currently hardcodes `document` as the extraction root. Refactor to accept an
-optional root element:
+**5. Transform logic needs a scoped entry point that reuses Feature 1's
+pipeline.** `content/transform.js` currently hardcodes `document` as both
+the extraction root and the sanitize/render path. For targeting mode to
+produce output consistent with Feature 1 (same Markdown-normalized
+tables/code/lists, same template, same CSS) rather than a different,
+cruder path, the picked element needs to go through the *same*
+sanitize -> Turndown -> render -> template pipeline as whole-page mode -
+only the extraction step differs:
 
 ```js
-function zenTransform(root = document.body) {
-  const scoped = root === document.body;
-  const clone = (scoped ? document : root).cloneNode(true);
-  const article = scoped ? new Readability(clone).parse() : null;
-  const bodyHtml = article
-    ? DOMPurify.sanitize(article.content, { WHOLE_DOCUMENT: false })
-    : DOMPurify.sanitize((scoped ? document.body : root).innerHTML, { WHOLE_DOCUMENT: false });
-  ...
+function zenTransform(root = document) {
+  const scoped = root !== document;
+  const clone = root.cloneNode(true);
+  const article = scoped ? null : new Readability(clone).parse();
+  const rawHtml = article ? article.content : (scoped ? root.innerHTML : document.body.innerHTML);
+
+  const sanitized = DOMPurify.sanitize(rawHtml, { WHOLE_DOCUMENT: false });
+  const markdown = turndownService.turndown(sanitized);   // Feature 1's normalization step
+  const bodyHtml = markdownRenderer.render(markdown);      // back to uniform HTML
+  const title = (article && article.title) || document.title;
+  renderTemplate(title, bodyHtml);                          // same template both modes share
 }
 ```
-Readability's whole-document heuristic doesn't make sense on an
-already-picked element (there's nothing to "find the article" within a
-single `<div>`) - so targeting mode should skip Readability and go straight
-to DOMPurify-sanitizing the picked subtree, replacing `document.body` with
-just that sanitized fragment (in the same wrapper template from Feature 1).
-This is effectively the same shortcut web-clipper's own manual-selection
-mode takes (`select.ts` clones the picked node and skips Readability
-entirely).
+Readability's whole-document heuristic is skipped when a specific root is
+given (there's nothing to "find the article" within an already-picked
+element) - `scoped` mode goes straight from the picked subtree's HTML into
+the *same* Turndown/render/template path whole-page mode uses. This is the
+one place targeting mode legitimately diverges from Feature 1: which HTML
+enters the pipeline (Readability's guess vs. the user's explicit pick) -
+everything downstream of extraction is identical, which is what makes the
+two features composable instead of producing visually inconsistent results
+depending on which mode was used.
 
-**5. Injection sequencing.** Picking mode still needs DOMPurify (to sanitize
-the final picked subtree) but not necessarily Readability (skipped per
-above) - so the picker flow could drop `vendor/Readability.js` from its
-`files` array, a minor injection-size optimization.
+**6. Injection sequencing.** Picking mode still needs DOMPurify + Turndown +
+the Markdown renderer (Feature 1's pipeline) but not Readability, since
+extraction is skipped when a root is explicitly picked - so the picker flow
+can drop `vendor/Readability.js` from its `files` array, a minor injection
+size optimization.
 
 ### Summary of changes
 
 | File | Change |
 |---|---|
 | `manifest.json` | Add `context_menus` permission + a `contextMenus.create` call (service worker) for "Select element to clean up" |
-| `service-worker.js` | Keep `onClicked` as-is (whole page); add `contextMenus.onClicked` handler that injects `content/picker.js` instead |
-| `content/picker.js` | New file - hover outline, capture-phase click, Escape-to-cancel, calls transform directly on the clicked element |
-| `content/transform.js` | Refactor into a `zenTransform(root)` function taking an optional scoped root; skip Readability when a root is provided |
-| `test/transform.test.js` | Add a case for `zenTransform` given a specific element (jsdom `element.cloneNode(true)` + DOMPurify only, no Readability) |
+| `service-worker.js` | Keep `onClicked` as-is (whole page); add `contextMenus.onClicked` handler that injects `content/picker.js` (+ Feature 1's vendored libs, minus Readability) instead |
+| `content/picker.js` | New file - hover outline with block-ancestor widening (`nearestBlock`), keyboard widen/narrow/confirm, capture-phase click, Escape-to-cancel, calls `zenTransform` directly on the picked element |
+| `content/transform.js` | Refactor `zenTransform(root)` so both whole-page and scoped calls share the same sanitize -> Turndown -> render -> template pipeline from Feature 1; only extraction (Readability vs. direct `innerHTML`) branches on `scoped` |
+| `test/transform.test.js` | Add a case for `zenTransform` given a specific element (jsdom, skips Readability, asserts the same Markdown-normalized table/code output as whole-page mode on equivalent input) |
 
 **Not needed**: no `host_permissions` change (still `activeTab`-triggered,
 since context menu clicks are a valid `activeTab` gesture per the skill's
@@ -250,13 +285,22 @@ clip drafts across its editor UI).
 
 ### Effort comparison
 
-Both features are real pipeline/architecture changes, not same-day tweaks.
+Both features are real pipeline/architecture changes, not same-day tweaks,
+and **Feature 2 depends on Feature 1 being built first** - targeting mode
+reuses Feature 1's sanitize/Turndown/render/template pipeline so both modes
+produce consistent output; building the picker against today's raw-HTML
+template would mean redoing that wiring once Feature 1 lands.
+
 Feature 1 adds two-to-three new vendored libraries (Turndown, a GFM plugin,
 a Markdown renderer) and a new conversion stage between extraction and
 templating. Feature 2 adds a new content script, a new manifest surface
 (context menu), and a signature change to the existing transform function -
 but stays within zen-view's existing permission model and doesn't require
 pulling in web-clipper's external picker packages (`@web-clipper/highlight`,
-`@web-clipper/area-selector`); a from-scratch picker is ~30-40 lines because
+`@web-clipper/area-selector`); a from-scratch picker is still small (roughly
+50-70 lines with the ancestor-walking/keyboard-widen logic included) because
 zen-view's simpler "transform in place, no persistence" model doesn't need
-selector-string generation or drag-rectangle support.
+selector-string generation or drag-rectangle support - the main added
+complexity versus the original sketch is picking a sensible block-level
+ancestor instead of the raw hovered leaf node, and letting the user correct
+that guess before confirming.
