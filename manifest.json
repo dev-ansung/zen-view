@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Zen View",
-  "version": "1.1.0",
-  "description": "Turn any page into a clean, readable, sanitized view with one click.",
+  "version": "1.2.0",
+  "description": "Click, pick an element (or press Escape for the whole page), and turn it into a clean, readable, sanitized view.",
   "action": {},
   "permissions": ["activeTab", "scripting"],
   "background": {

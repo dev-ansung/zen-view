@@ -1,15 +1,17 @@
+const TRANSFORM_VENDOR_FILES = [
+  "vendor/purify.min.js",
+  "vendor/Readability.js",
+  "vendor/turndown.js",
+  "vendor/turndown-plugin-gfm.js",
+  "vendor/marked.js",
+  "content/transform.js",
+];
+
 chrome.action.onClicked.addListener(async (tab) => {
   try {
     await chrome.scripting.executeScript({
       target: { tabId: tab.id },
-      files: [
-        "vendor/purify.min.js",
-        "vendor/Readability.js",
-        "vendor/turndown.js",
-        "vendor/turndown-plugin-gfm.js",
-        "vendor/marked.js",
-        "content/transform.js",
-      ],
+      files: [...TRANSFORM_VENDOR_FILES, "content/picker.js"],
     });
     await flashBadge("✓", "#0a7d2c");
   } catch (err) {

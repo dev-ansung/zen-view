@@ -1,8 +1,10 @@
-(() => {
-  const clone = document.cloneNode(true);
-  const article = new Readability(clone).parse();
+function zenTransform(root) {
+  const scoped = root !== document;
 
-  const rawHtml = article ? article.content : document.body.innerHTML;
+  const clone = root.cloneNode(true);
+  const article = scoped ? null : new Readability(clone).parse();
+
+  const rawHtml = article ? article.content : (scoped ? root.outerHTML : document.body.innerHTML);
   const sanitized = DOMPurify.sanitize(rawHtml, { WHOLE_DOCUMENT: false });
 
   const turndownService = new TurndownService({ codeBlockStyle: "fenced" });
@@ -25,4 +27,10 @@
       blockquote{border-left:3px solid #ccc;margin:1em 0;padding-left:1em;color:#555}
     </style></head>` +
     `<body><h1>${title}</h1>${bodyHtml}</body>`;
-})();
+}
+
+if (typeof window !== "undefined") window.zenTransform = zenTransform;
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { zenTransform };
+}
