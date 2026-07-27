@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Zen View",
+  "version": "1.0.0",
+  "description": "Turn any page into a clean, readable, sanitized view with one click.",
+  "action": {},
+  "permissions": ["activeTab", "scripting"],
+  "background": {
+    "service_worker": "service-worker.js"
+  }
+}
