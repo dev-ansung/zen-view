@@ -1,23 +1,47 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const vm = require("node:vm");
 const { JSDOM } = require("jsdom");
 const { Readability } = require("@mozilla/readability");
 const createDOMPurify = require("dompurify");
 
-// Mirrors the sanitize+extract pipeline implemented in content/transform.js,
-// exercised here against jsdom instead of chrome.scripting.executeScript.
+const VENDOR = path.join(__dirname, "..", "vendor");
+
+// Mirrors the sanitize+extract+normalize pipeline implemented in
+// content/transform.js, exercised here against jsdom instead of
+// chrome.scripting.executeScript. Loads the same vendored files the
+// extension ships (not the npm packages directly) via jsdom's internal VM
+// context, so the files run as true global scripts - matching how a
+// content script sees them (no `module`/`exports` in scope) - which is
+// what makes each library's UMD wrapper pick the browser-global branch.
+function loadVendorGlobals(dom) {
+  const context = dom.getInternalVMContext();
+  for (const file of ["turndown.js", "turndown-plugin-gfm.js", "marked.js"]) {
+    vm.runInContext(fs.readFileSync(path.join(VENDOR, file), "utf8"), context);
+  }
+}
+
 function zenView(html, url = "https://example.com/") {
-  const dom = new JSDOM(html, { url });
+  const dom = new JSDOM(html, { url, runScripts: "dangerously" });
+  loadVendorGlobals(dom);
+
   const clone = dom.window.document.cloneNode(true);
   const article = new Readability(clone).parse();
 
   const DOMPurify = createDOMPurify(dom.window);
-  const bodyHtml = article
-    ? DOMPurify.sanitize(article.content, { WHOLE_DOCUMENT: false })
-    : DOMPurify.sanitize(dom.window.document.body.innerHTML, { WHOLE_DOCUMENT: false });
+  const rawHtml = article ? article.content : dom.window.document.body.innerHTML;
+  const sanitized = DOMPurify.sanitize(rawHtml, { WHOLE_DOCUMENT: false });
+
+  const turndownService = new dom.window.TurndownService({ codeBlockStyle: "fenced" });
+  turndownService.use(dom.window.turndownPluginGfm.gfm);
+  const markdown = turndownService.turndown(sanitized);
+  const bodyHtml = dom.window.marked.parse(markdown);
+
   const title = (article && article.title) || dom.window.document.title;
 
-  return { title, bodyHtml };
+  return { title, markdown, bodyHtml };
 }
 
 test("extracts article content, strips scripts/handlers, drops nav/footer boilerplate", () => {
@@ -64,4 +88,53 @@ test("falls back to sanitizing body in place when Readability can't extract an a
   assert.equal(title, "Search Results");
   assert.ok(!bodyHtml.includes("<script>"), "script tag removed even in fallback");
   assert.ok(!bodyHtml.includes("onclick"), "onclick handler removed even in fallback");
+});
+
+test("normalizes a table into a uniform Markdown table, regardless of source markup", () => {
+  const before = `<html><head><title>Data Article</title></head>
+<body>
+  <article>
+    <h1>Data Article</h1>
+    <p>This article contains a table with some data in it, along with enough
+    surrounding text for Readability to treat it as the main content region
+    rather than boilerplate to be discarded during extraction.</p>
+    <table class="weird-vendor-table-class" data-sortable="true">
+      <tr><th>Name</th><th>Score</th></tr>
+      <tr><td>Alice</td><td>90</td></tr>
+      <tr><td>Bob</td><td>85</td></tr>
+    </table>
+    <p>Some closing text after the table to round out the article body.</p>
+  </article>
+</body></html>`;
+
+  const { markdown, bodyHtml } = zenView(before);
+
+  assert.ok(markdown.includes("| Name | Score |"), "table normalized to Markdown table syntax");
+  assert.ok(bodyHtml.includes("<table>"), "rendered back to a plain <table> with no source classes/attrs");
+  assert.ok(!bodyHtml.includes("weird-vendor-table-class"), "source-specific class stripped by the round-trip");
+  assert.ok(!bodyHtml.includes("data-sortable"), "source-specific data attribute stripped by the round-trip");
+});
+
+test("normalizes a code block into a fenced Markdown block", () => {
+  // Note: Readability's own extraction step strips the `class="language-js"`
+  // attribute before DOMPurify/Turndown ever see the markup (independent of
+  // this pipeline's sanitization), so the language tag doesn't survive
+  // whole-page extraction. Fencing without a language tag is still correct
+  // Markdown - this documents that limitation rather than a pipeline bug.
+  const before = `<html><head><title>Code Article</title></head>
+<body>
+  <article>
+    <h1>Code Article</h1>
+    <p>This article contains a code sample, along with enough surrounding
+    text for Readability to treat it as the main content region rather than
+    boilerplate to be discarded during extraction from the page.</p>
+    <pre><code class="language-js">const x = 1;</code></pre>
+    <p>Some closing text after the code block to round out the article.</p>
+  </article>
+</body></html>`;
+
+  const { markdown, bodyHtml } = zenView(before);
+
+  assert.ok(markdown.includes("```\nconst x = 1;\n```"), "code block converted to a fenced Markdown block");
+  assert.ok(bodyHtml.includes("<pre><code>"), "rendered back as a plain fenced code block");
 });

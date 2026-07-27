@@ -2,7 +2,14 @@ chrome.action.onClicked.addListener(async (tab) => {
   try {
     await chrome.scripting.executeScript({
       target: { tabId: tab.id },
-      files: ["vendor/purify.min.js", "vendor/Readability.js", "content/transform.js"],
+      files: [
+        "vendor/purify.min.js",
+        "vendor/Readability.js",
+        "vendor/turndown.js",
+        "vendor/turndown-plugin-gfm.js",
+        "vendor/marked.js",
+        "content/transform.js",
+      ],
     });
     await flashBadge("✓", "#0a7d2c");
   } catch (err) {
