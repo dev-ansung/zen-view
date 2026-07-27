@@ -1,7 +1,7 @@
 {
   "name": "zen-view",
-  "version": "1.0.0",
-  "description": "",
+  "version": "1.2.0",
+  "description": "A lightweight Chrome extension that turns any page, or a picked element on it, into a clean, readable, sanitized view.",
   "main": "service-worker.js",
   "directories": {
     "test": "test"
@@ -9,9 +9,18 @@
   "scripts": {
     "test": "node --test test/*.test.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": [
+    "chrome-extension",
+    "readability",
+    "sanitize",
+    "markdown"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dev-ansung/zen-view.git"
+  },
+  "author": "dev-ansung",
+  "license": "MIT",
   "type": "commonjs",
   "devDependencies": {
     "@mozilla/readability": "^0.6.0",

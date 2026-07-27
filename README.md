@@ -1,90 +1,126 @@
 # Zen View
 
-A lightweight Chrome extension (Manifest V3). Click the toolbar icon to pick
-an element on the page - or press Escape to use the whole page instead - and
-turn it into a clean, readable, sanitized view, powered by
-[Mozilla Readability](https://github.com/mozilla/readability) (article
-extraction), [DOMPurify](https://github.com/cure53/DOMPurify) (sanitization),
-and [Turndown](https://github.com/mixmark-io/turndown) +
-[marked](https://github.com/markedjs/marked) (structure normalization).
+[![test](https://github.com/dev-ansung/zen-view/actions/workflows/test.yml/badge.svg)](https://github.com/dev-ansung/zen-view/actions/workflows/test.yml)
+[![Manifest](https://img.shields.io/badge/manifest-v3-blue)](manifest.json)
+[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
+
+A lightweight Chrome extension that turns any page - or just one element on
+it - into a clean, readable, sanitized view. No account, no server, no
+tracking: everything runs locally in the tab you're looking at.
+
+## Features
+
+- **One-click reading view** - strips ads, nav bars, trackers, and scripts,
+  leaving just the article
+- **Element targeting** - pick any block on the page (a table, a recipe
+  card, a comment thread) and clean up just that
+- **Consistent structure** - tables, code blocks, and lists always render the
+  same way, regardless of how messy the source site's markup is
+- **No build step** - vendored, dependency-free scripts; load it unpacked
+  and go
+- **Minimal permissions** - only `activeTab` and `scripting`; no
+  `host_permissions`, no background activity, no data collection
+
+## Install
+
+> [!NOTE]
+> Zen View isn't published on the Chrome Web Store yet - install it unpacked
+> for now.
+
+1. Clone this repository:
+   ```sh
+   git clone https://github.com/dev-ansung/zen-view.git
+   ```
+2. Open `chrome://extensions`
+3. Enable **Developer mode** (top right)
+4. Click **Load unpacked** and select the `zen-view` directory
+5. Pin the icon to your toolbar
+
+## Usage
+
+Click the Zen View icon on any page, then either:
+
+- **Click an element** (a table, an article, a card) to clean up just that
+  element, or
+- **Press `Escape`** to clean up the whole page instead
+
+While picking, the nearest block-level element under your cursor is
+outlined - never a bare `<span>` or text node. Press `ArrowUp` to widen the
+selection to the parent element if the guess is too narrow.
+
+> [!TIP]
+> On article pages, whole-page mode runs [Readability](#how-it-works) first
+> to find the article automatically - you don't need to pick anything.
+
+The toolbar badge flashes green on success, or red if something went wrong
+(check the service worker console via `chrome://extensions` → Zen View →
+"service worker" for details).
 
 ## How it works
 
-Clicking the icon injects seven plain scripts into the current tab via
-`chrome.scripting.executeScript` (no build step, no bundler):
+Clicking the icon injects a handful of plain, vendored scripts into the
+current tab via `chrome.scripting.executeScript` - no bundler, no build
+step:
 
-1. `vendor/purify.min.js` - DOMPurify, vendored unmodified
-2. `vendor/Readability.js` - Mozilla Readability, vendored unmodified
-3. `vendor/turndown.js` - Turndown (HTML -> Markdown), vendored unmodified
-4. `vendor/turndown-plugin-gfm.js` - GFM plugin (tables, strikethrough, task
-   lists) for Turndown; re-wrapped as a plain global script since upstream
-   only ships CJS/ES builds, no UMD - logic is unmodified
-5. `vendor/marked.js` - Markdown -> HTML renderer, vendored unmodified
-6. `content/transform.js` - defines `zenTransform(root)`: sanitizes `root`
-   with DOMPurify, normalizes it to Markdown via Turndown and back to HTML
-   via marked, then replaces the page with a clean single-column view.
-   `root === document` runs Readability first to find the article; a picked
-   element skips Readability and uses the element's own markup directly.
-7. `content/picker.js` - enters picking mode: hovering the page outlines the
-   nearest block-level ancestor of the cursor (a whole `<table>`, `<ul>`,
-   `<blockquote>`, etc, never a bare leaf node like a `<span>`), clicking
-   confirms it and calls `zenTransform(pickedElement)`, and pressing
-   **Escape** cancels picking and calls `zenTransform(document)` instead
-   (today's original whole-page behavior). Press **ArrowUp** while hovering
-   to widen the selection to the parent element if the guessed block is too
-   narrow.
+| File | Role |
+|---|---|
+| `vendor/purify.min.js` | [DOMPurify](https://github.com/cure53/DOMPurify) - strips scripts, inline handlers, and unsafe markup |
+| `vendor/Readability.js` | [Mozilla Readability](https://github.com/mozilla/readability) - finds the main article on a page |
+| `vendor/turndown.js` + `vendor/turndown-plugin-gfm.js` | [Turndown](https://github.com/mixmark-io/turndown) - converts HTML to Markdown, with GFM table support |
+| `vendor/marked.js` | [marked](https://github.com/markedjs/marked) - renders the normalized Markdown back to HTML |
+| `content/transform.js` | `zenTransform(root)` - the shared sanitize → Turndown → marked pipeline |
+| `content/picker.js` | Hover-to-outline, click-to-confirm element picker |
 
-The Markdown round-trip means structure (tables, fenced code blocks, lists,
-blockquotes) always renders the same way regardless of the source site's
-original HTML/CSS - the output HTML is always Turndown/marked-generated, not
-arbitrary source markup, so the template only needs to style one known shape
-per construct. Both whole-page and picked-element modes share this same
-`zenTransform` pipeline, so their output is visually consistent.
+Both whole-page and targeted modes funnel through the same `zenTransform`
+pipeline, so their output always looks the same regardless of which mode
+produced it:
 
-If Readability can't identify an article, or only finds a thin fragment
-(under ~250 characters of text - e.g. a single teaser card on a homepage or
-listing page), it falls back to sanitizing the existing page body in place
-rather than rendering just that fragment.
+```
+root (document, or a picked element)
+  -> Readability (whole-page mode only, finds the article)
+  -> DOMPurify.sanitize()
+  -> Turndown (HTML -> Markdown)
+  -> marked (Markdown -> HTML)
+  -> replace the page
+```
 
-Uses `activeTab` + `scripting` permissions only - no `host_permissions`, no
-background scanning, no data collection.
+Routing everything through a Markdown round-trip means a table is always the
+*same* `<table>` markup and a code block is always the *same* fenced block,
+no matter how different the source site's original HTML/CSS was - the
+template only has to style one shape per construct.
 
-## Install (unpacked, for development)
+> [!NOTE]
+> If Readability can't identify an article, or only finds a thin fragment
+> (under ~250 characters - a single teaser card on a homepage, say), Zen
+> View falls back to sanitizing the full page body instead of rendering just
+> that fragment.
 
-1. Open `chrome://extensions`
-2. Enable **Developer mode** (top right)
-3. Click **Load unpacked** and select this directory
-4. Visit any page and click the Zen View icon in the toolbar, then either
-   click an element to target it or press Escape for the whole page
-
-The badge flashes green (✓) on success or red (!) if something went wrong
-(check the service worker console via `chrome://extensions` -> Zen View ->
-"service worker" for errors).
-
-## Example
-
-**Before**: a news article page with a nav bar, sidebar, footer, ads, and
-tracking scripts.
-
-**After**: just the title and article body (whole page) or just the picked
-element (targeting mode), in a readable single-column layout, with all
-`<script>` tags and inline event handlers stripped.
+See [`docs/web-clipper-comparison.md`](docs/web-clipper-comparison.md) and
+[`docs/proposal-layout-consistency-and-targeting.md`](docs/proposal-layout-consistency-and-targeting.md)
+for the design background behind the Markdown pipeline and the element
+picker.
 
 ## Development
 
 ```sh
 npm install   # dev-only deps, used for tests
-npm test      # runs unit tests against the sanitize+extract logic
+npm test      # run the unit tests
 ```
 
 `test/transform.test.js` and `test/picker.test.js` load the actual files
-shipped by the extension (`content/transform.js`, `content/picker.js`, and
-the vendored libraries, not the npm packages) via jsdom's internal VM
-context, so the tests catch vendoring bugs, not just pipeline-logic bugs.
-Fixtures cover nav/footer boilerplate, inline event handlers, a `<script>`
-tag, a table, a code block, a thin-teaser listing page, and the picker's
-element-selection and Escape-fallback behavior.
+shipped by the extension - not the npm packages - through jsdom's internal
+VM context, so a script that works in Node but breaks once vendored as a
+plain global (a real failure mode this project has hit before) gets caught.
+Fixtures cover article extraction, script/handler stripping, table and code
+block normalization, the thin-teaser fallback, and the picker's
+element-selection and Escape-to-whole-page behavior.
 
-Tests cover the transform and picker logic; they don't replace manually
-loading the unpacked extension and clicking the icon on a real page (see
-Install above).
+Tests cover the transform and picker logic; they don't replace loading the
+unpacked extension and trying it on a real page (see [Install](#install)).
+
+## Vendored dependencies
+
+Zen View vendors a few libraries as plain scripts (see the table above)
+instead of pulling them in through a bundler. Each file retains its
+original license header: DOMPurify and Readability are Apache-2.0 / MPL-2.0;
+Turndown, turndown-plugin-gfm, and marked are MIT.
