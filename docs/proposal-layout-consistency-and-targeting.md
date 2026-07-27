@@ -24,73 +24,86 @@ the *output* (what template wraps the result).
 
 ## Feature 1: Layout consistency
 
-**What "layout consistency" means here**: right now every page - a recipe
-blog, a news article, a technical doc with code blocks and tables - gets
-squashed into the same fixed template (18px system font, 680px column, no
-regard for the source's original structure). "Consistency" can mean two
-different things, and the doc should pick one:
-
-- **(a) Consistent zen-view output** - every clipped page looks the same
-  (current behavior, already true) - the ask would be refining that one
-  template (better code block styling, table styling, blockquote styling,
-  captioned images) rather than architecture change.
-- **(b) Structure preserved from the source** - a recipe's ingredient list
-  stays a list, a table stays a table with its columns, code blocks keep
-  syntax highlighting - i.e. the "layout" is *derived from the source's
-  semantic HTML* rather than discarded. This is the web-clipper-comparison
-  gap: Readability already keeps the extracted subtree's semantic tags
-  (`<table>`, `<pre>`, `<ul>`, etc.) in `article.content` - the gap is that
-  DOMPurify's default allow-list is broad enough to pass these through, but
-  zen-view's template CSS doesn't style anything beyond `body`/`img`.
-
-This proposal assumes **(b)**, since that's the concrete gap the web-clipper
-comparison surfaced (Turndown's structural HTML->Markdown mapping vs.
-zen-view's fixed template).
+**What "layout consistency" means here**, matching web-clipper's actual
+mechanism (per web-clipper-comparison.md): structure is preserved by
+normalizing the extracted HTML into semantic Markdown constructs - a table
+becomes a Markdown table, a code block becomes a fenced code block, a list
+stays a list - rather than trusting whatever heterogeneous HTML/CSS classes
+the source site happened to use. That normalization step is exactly what
+zen-view is missing today. Right now `content/transform.js` keeps
+Readability's raw extracted HTML as-is (`article.content`, source markup and
+whatever classes survive DOMPurify's default allow-list) and drops it into a
+single fixed template - so a table on one site and a table on another can
+render with completely different embedded markup/attributes, and zen-view's
+template CSS has to either guess at every site's HTML conventions or ignore
+them. Passing everything through a Markdown round-trip removes that
+variance: no matter what the source HTML looked like, the output is always
+the same, small set of Markdown-equivalent constructs, styled once.
 
 ### What's needed
 
-1. **Verify DOMPurify's allow-list already passes structural tags through.**
-   `DOMPurify.sanitize(article.content, { WHOLE_DOCUMENT: false })` uses the
-   default config, which permits `table`/`thead`/`tbody`/`tr`/`td`/`th`,
-   `pre`/`code`, `ul`/`ol`/`li`, `blockquote`, `figure`/`figcaption`. No
-   change needed here - confirm with a fixture test (extend
-   `test/transform.test.js` with a table + code-block fixture, assert the
-   tags survive sanitization).
+1. **Vendor a Turndown-equivalent HTML-to-Markdown converter.** The
+   `turndown` npm package ships a plain UMD browser build
+   (`turndown/dist/turndown.js`), the same vendoring pattern already used for
+   DOMPurify and Readability - copy it into `vendor/turndown.js`, no bundler
+   needed. Add `turndown` as a dev dependency in `zen-view/package.json` (for
+   tests) and vendor the browser build for the extension runtime, matching
+   how `dompurify`/`@mozilla/readability` are already handled.
 
-2. **Style what already survives.** Extend the inline `<style>` block in
-   `content/transform.js` to cover the tags Readability/DOMPurify pass
-   through but the current CSS ignores:
+2. **Insert a Markdown normalization step between Readability and the
+   template.** New pipeline:
+   ```
+   document -> Readability.parse() -> DOMPurify.sanitize(article.content)
+     -> TurndownService().turndown(sanitizedHtml)   // HTML -> Markdown
+     -> a Markdown renderer                          // Markdown -> HTML for display
+     -> template
+   ```
+   Sanitizing *before* the Markdown conversion (not after) matters: DOMPurify
+   needs to run on raw HTML, and Turndown needs clean input to map
+   correctly - converting first then sanitizing the resulting rendered HTML
+   would be redundant work in the wrong order.
+
+3. **Render the normalized Markdown back to HTML for display.** Unlike
+   web-clipper (which stops at Markdown and hands it to an external note
+   service), zen-view still needs to *render* something in the tab. This
+   needs a minimal Markdown renderer - vendoring `marked` or `snarkdown`
+   (both ship as small, dependency-free UMD/plain-script builds) the same
+   way. This produces uniform HTML: every table is the same `<table>` markup
+   regardless of source site, every code block is the same
+   `<pre><code class="language-x">` shape.
+
+4. **Style the normalized output once.** Because the HTML is now always
+   Turndown/renderer-generated (not arbitrary source HTML), the template CSS
+   only needs to handle one known shape per construct - not every site's
+   variant:
    ```css
    table { border-collapse: collapse; width: 100%; margin: 1.5em 0; }
    th, td { border: 1px solid #ddd; padding: 0.5em; text-align: left; }
    pre { background: #f4f4f4; padding: 1em; overflow-x: auto; border-radius: 4px; }
    code { font-family: ui-monospace, monospace; }
    blockquote { border-left: 3px solid #ccc; margin: 1em 0; padding-left: 1em; color: #555; }
-   figure { margin: 1.5em 0; } figcaption { font-size: 0.9em; color: #666; }
    ```
-   This is a pure CSS addition - no manifest/permission changes, no new
-   files. Lowest-effort, highest-value part of this feature.
 
-3. **Optional: syntax highlighting for code blocks.** Readability preserves
-   `<pre><code class="language-js">...</code></pre>` when the source site
-   used that convention, but doesn't highlight it - highlighting was the
-   source page's own CSS/JS, which is discarded. To actually get colored
-   syntax (not just monospace text), a highlighter library (e.g.
-   `highlight.js`, vendored the same way as DOMPurify/Readability - a
-   browser build, no bundler) would need to run over `<pre><code>` blocks in
-   `transform.js` before injection into `document.documentElement.innerHTML`.
-   This is a meaningful size/complexity addition (highlight.js's core +
-   language grammars is not tiny) - worth deferring unless code-heavy pages
-   are a real use case.
+5. **Configure Turndown to match web-clipper's choices where they make
+   sense for zen-view**: `codeBlockStyle: 'fenced'` (preserves language tags
+   on code fences) and a GFM plugin (`turndown-plugin-gfm`, also a plain
+   script, also vendorable) for table support - Turndown's core doesn't
+   handle tables without it, which is why web-clipper depends on the GFM
+   plugin too.
 
-4. **Optional: preserve image captions/credits.** Readability keeps
-   `<figure>`/`<figcaption>` when present in the source. No extra work
-   beyond step 2's CSS if the goal is just "don't drop them" - they already
-   survive DOMPurify's default allow-list.
+6. **What's explicitly out of scope**: syntax highlighting (the source
+   page's highlighting is CSS/JS, discarded regardless of pipeline; would
+   need a separate highlighter library layered on top of the fenced code
+   blocks) and image captions (`<figure>`/`<figcaption>` don't have a
+   standard Markdown equivalent - Turndown drops them to plain text by
+   default; preserving them would need a custom Turndown rule).
 
-**Scope**: step 2 alone (CSS only) delivers most of the visible improvement
-and requires no manifest, permission, or architecture change. Steps 3-4 are
-optional and separable.
+**Trade-off vs. the CSS-only approach**: this is a real pipeline change (two
+new vendored libraries, a new conversion step, tests need updating to assert
+against Markdown-normalized output) rather than a same-day CSS tweak - but it
+directly matches web-clipper's actual technique instead of a
+lower-effort-but-different approach that only coincidentally addresses the
+same symptom (unstyled tables/code).
 
 ---
 
@@ -237,12 +250,13 @@ clip drafts across its editor UI).
 
 ### Effort comparison
 
-Feature 1 (step 2, the CSS-only version) is a same-day change with no new
-files. Feature 2 is a real feature addition - new content script, new
-manifest surface (context menu), and a signature change to the existing
-transform function - but stays within zen-view's existing permission model
-and doesn't require pulling in web-clipper's external picker packages
-(`@web-clipper/highlight`, `@web-clipper/area-selector`); a from-scratch
-picker is ~30-40 lines because zen-view's simpler "transform in place, no
-persistence" model doesn't need selector-string generation or drag-rectangle
-support.
+Both features are real pipeline/architecture changes, not same-day tweaks.
+Feature 1 adds two-to-three new vendored libraries (Turndown, a GFM plugin,
+a Markdown renderer) and a new conversion stage between extraction and
+templating. Feature 2 adds a new content script, a new manifest surface
+(context menu), and a signature change to the existing transform function -
+but stays within zen-view's existing permission model and doesn't require
+pulling in web-clipper's external picker packages (`@web-clipper/highlight`,
+`@web-clipper/area-selector`); a from-scratch picker is ~30-40 lines because
+zen-view's simpler "transform in place, no persistence" model doesn't need
+selector-string generation or drag-rectangle support.
