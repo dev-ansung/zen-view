@@ -27,13 +27,17 @@ tracking: everything runs locally in the tab you're looking at.
 > Zen View isn't published on the Chrome Web Store yet - install it unpacked
 > for now.
 
-1. Clone this repository:
-   ```sh
-   git clone https://github.com/dev-ansung/zen-view.git
-   ```
+1. Get the extension files, either:
+   - Download and unzip the latest `zen-view-*.zip` from the
+     [Releases page](https://github.com/dev-ansung/zen-view/releases), or
+   - Clone the repository:
+     ```sh
+     git clone https://github.com/dev-ansung/zen-view.git
+     ```
 2. Open `chrome://extensions`
 3. Enable **Developer mode** (top right)
-4. Click **Load unpacked** and select the `zen-view` directory
+4. Click **Load unpacked** and select the unzipped/cloned `zen-view`
+   directory (the one containing `manifest.json`)
 5. Pin the icon to your toolbar
 
 ## Usage
@@ -117,6 +121,14 @@ element-selection and Escape-to-whole-page behavior.
 
 Tests cover the transform and picker logic; they don't replace loading the
 unpacked extension and trying it on a real page (see [Install](#install)).
+
+### Releasing
+
+`npm run package` builds `dist/zen-view-<version>.zip`, containing only the
+files Chrome needs (`manifest.json`, `service-worker.js`, `content/`,
+`vendor/` - no tests, docs, or `node_modules`). Pushing a `vX.Y.Z` tag runs
+this automatically via [`.github/workflows/release.yml`](.github/workflows/release.yml)
+and attaches the zip to a GitHub Release.
 
 ## Vendored dependencies
 
